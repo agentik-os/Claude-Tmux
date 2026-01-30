@@ -18,8 +18,5 @@ case "$session_name" in
 esac
 
 branch=$(git -C "$dir" branch --show-current 2>/dev/null)
-if [ -n "$branch" ]; then
-    echo "$branch"
-else
-    echo "-"
-fi
+# Affiche "· branchname" ou rien
+[ -n "$branch" ] && echo "· $branch"

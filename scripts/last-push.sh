@@ -1,9 +1,10 @@
 #!/bin/bash
-# Time since last git push for the session's project
-session_name=$(tmux display-message -p '#S' 2>/dev/null | sed 's/-[0-9]*$//')
+# Hours since last push - simplified
 
-case "$session_name" in
-    Home) dir="/home/hacker" ;;
+# Get session name and find project directory
+session=$(tmux display-message -p '#S' 2>/dev/null | sed 's/-[0-9]*$//')
+
+case "$session" in
     Kommu) dir="/home/hacker/VibeCoding/work/kommu" ;;
     DentistryGPT) dir="/home/hacker/VibeCoding/clients/DentistryGPT" ;;
     Gluten) dir="/home/hacker/VibeCoding/clients/Gluten-Libre" ;;
@@ -14,25 +15,24 @@ case "$session_name" in
     AgentikDev) dir="/home/hacker/VibeCoding/agentic-os/AgentikDev" ;;
     Formation) dir="/home/hacker/VibeCoding/work/Formation-AI" ;;
     Resonant) dir="/home/hacker/VibeCoding/clients/resonant" ;;
-    *) dir="/home/hacker" ;;
+    *) echo "-"; exit 0 ;;
 esac
 
-# Get timestamp of last commit on remote tracking branch
-last_push=$(git -C "$dir" log -1 --format=%ct origin/$(git -C "$dir" branch --show-current 2>/dev/null) 2>/dev/null)
+# Check if directory exists and is a git repo
+[ ! -d "$dir/.git" ] && { echo "-"; exit 0; }
 
-if [ -n "$last_push" ]; then
-    now=$(date +%s)
-    diff=$((now - last_push))
+cd "$dir" || { echo "-"; exit 0; }
 
-    if [ $diff -lt 60 ]; then
-        echo "${diff}s"
-    elif [ $diff -lt 3600 ]; then
-        echo "$((diff/60))m"
-    elif [ $diff -lt 86400 ]; then
-        echo "$((diff/3600))h"
-    else
-        echo "$((diff/86400))d"
-    fi
-else
-    echo "-"
-fi
+# Get current branch
+branch=$(git branch --show-current 2>/dev/null)
+[ -z "$branch" ] && { echo "-"; exit 0; }
+
+# Get last push timestamp (origin/branch)
+last=$(git log -1 --format=%ct "origin/$branch" 2>/dev/null)
+[ -z "$last" ] && { echo "-"; exit 0; }
+
+# Calculate hours
+now=$(date +%s)
+hours=$(( (now - last) / 3600 ))
+
+echo "${hours}h"
