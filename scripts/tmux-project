@@ -1,0 +1,605 @@
+#!/bin/zsh
+# tmux-project - Smart tmux session manager per project
+# Usage: tmux-project <session_name> <project_path> [--no-claude]
+
+SESSION_NAME="$1"
+PROJECT_PATH="$2"
+NO_CLAUDE="$3"
+
+if [[ -z "$SESSION_NAME" || -z "$PROJECT_PATH" ]]; then
+    echo "Usage: tmux-project <session_name> <project_path> [--no-claude]"
+    exit 1
+fi
+
+# === SUPERMEMORY: Auto-detect container from path ===
+supermemory_container() {
+    local path="$1"
+    local project_name
+
+    # Extract project name using parameter expansion (zsh compatible)
+    project_name="${path##*/}"
+    project_name="${project_name:l}"  # Lowercase in zsh
+    project_name="${project_name// /-}"  # Replace spaces with dashes
+
+    if [[ "$path" == *"/VibeCoding/work/"* ]]; then
+        echo "work-${project_name}"
+    elif [[ "$path" == *"/VibeCoding/clients/"* ]]; then
+        echo "client-${project_name}"
+    elif [[ "$path" == *"/VibeCoding/agentic-os/"* ]]; then
+        echo "agentik-${project_name}"
+    elif [[ "$path" == *"/VibeCoding/1-life"* ]]; then
+        echo "life-${project_name}"
+    elif [[ "$path" == "/home/hacker" ]]; then
+        echo "home-global"
+    else
+        echo "default"
+    fi
+}
+
+SUPERMEMORY_CONTAINER=$(supermemory_container "$PROJECT_PATH")
+export SUPERMEMORY_CONTAINER
+
+# Command to launch in session (with Supermemory container)
+if [[ "$NO_CLAUDE" == "--no-claude" ]]; then
+    SESSION_CMD=""
+else
+    SESSION_CMD="SUPERMEMORY_CONTAINER=$SUPERMEMORY_CONTAINER claude --dangerously-skip-permissions"
+fi
+
+# Function to create a session
+create_session() {
+    local name="$1"
+    if [[ -n "$SESSION_CMD" ]]; then
+        tmux new-session -d -s "$name" -c "$PROJECT_PATH" "$SESSION_CMD"
+    else
+        tmux new-session -d -s "$name" -c "$PROJECT_PATH"
+    fi
+}
+
+# Function to find next available number
+next_number() {
+    local base="$1"
+    local max=0
+    for s in $(tmux ls 2>/dev/null | grep -E "^${base}(-[0-9]+)?:" | cut -d: -f1); do
+        if [[ "$s" == "$base" ]]; then
+            [[ 1 -gt $max ]] && max=1
+        elif [[ "$s" =~ ^${base}-([0-9]+)$ ]]; then
+            num="${match[1]}"
+            [[ $num -ge $max ]] && max=$((num + 1))
+        fi
+    done
+    [[ $max -eq 0 ]] && echo "" || echo "-$max"
+}
+
+# List existing sessions for this project
+existing=($(tmux ls 2>/dev/null | grep -E "^${SESSION_NAME}(-[0-9]+)?:" | cut -d: -f1))
+
+# If no session → create directly
+if [[ ${#existing[@]} -eq 0 ]]; then
+    echo "📁 Creating session $SESSION_NAME..."
+    create_session "$SESSION_NAME"
+    tmux attach -t "$SESSION_NAME"
+    exit 0
+fi
+
+# Display menu
+show_menu() {
+    clear
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║  📂 $SESSION_NAME"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo ""
+    echo " Active sessions:"
+    echo " ─────────────────"
+    i=1
+    for s in "${existing[@]}"; do
+        wins=$(tmux list-windows -t "$s" 2>/dev/null | wc -l)
+        created=$(tmux display-message -t "$s" -p '#{session_created}' 2>/dev/null)
+        if [[ -n "$created" ]]; then
+            created_fmt=$(date -d "@$created" "+%d/%m %H:%M" 2>/dev/null || echo "?")
+        else
+            created_fmt="?"
+        fi
+        echo "   $i) $s  │ $wins win │ created $created_fmt"
+        ((i++))
+    done
+    echo ""
+    # Git status
+    git_status=""
+    if [[ -d "$PROJECT_PATH/.git" ]]; then
+        cd "$PROJECT_PATH"
+        uncommitted=$(git status --porcelain 2>/dev/null | wc -l)
+        git fetch --quiet 2>/dev/null
+        ahead=$(git rev-list --count @{upstream}..HEAD 2>/dev/null || echo "0")
+        behind=$(git rev-list --count HEAD..@{upstream} 2>/dev/null || echo "0")
+
+        if [[ "$uncommitted" -gt 0 ]]; then
+            git_status="⚠️ $uncommitted uncommitted"
+        elif [[ "$ahead" -gt 0 && "$behind" -gt 0 ]]; then
+            git_status="⚠️ ↑$ahead ↓$behind diverged"
+        elif [[ "$ahead" -gt 0 ]]; then
+            git_status="🚀 ↑$ahead to push"
+        elif [[ "$behind" -gt 0 ]]; then
+            git_status="⬇️ ↓$behind to pull"
+        else
+            git_status="✅ synced"
+        fi
+    fi
+
+    echo " Actions:"
+    echo " ────────"
+    echo "   N) ➕ New session"
+    echo "   D) 🗑️  Delete a session"
+    echo "   K) 💀 Delete ALL $SESSION_NAME sessions"
+    echo "   C) 🧹 Clean project cache (safe, keeps Claude data)"
+    echo "   I) 📚 Init/refresh Claude context"
+    echo "   X) ☢️  NUCLEAR (kill all + clean caches)"
+
+    if [[ -d "$PROJECT_PATH/.git" ]]; then
+        echo ""
+        echo " Git: $git_status"
+        echo " ─────────────────"
+        echo "   P) ⬇️  Pull (fetch + merge)"
+        echo "   G) 🚀 Commit + Push (save & sync)"
+        echo "   S) 🔄 Sync (pull if behind, push if ahead)"
+    fi
+
+    echo ""
+    echo "   Q) ❌ Cancel"
+    echo ""
+    echo -n " ➤ "
+}
+
+show_menu
+read choice
+
+# Convert to lowercase for comparison
+choice_lower="${choice:l}"
+
+case "$choice_lower" in
+    [1-9])
+        idx=$((choice_lower))
+        if [[ $idx -le ${#existing[@]} ]]; then
+            sess="${existing[$idx]}"
+            echo ""
+            echo "🔗 Attaching to $sess..."
+            sleep 0.3
+            tmux attach -t "$sess"
+        else
+            echo "❌ Invalid choice"
+        fi
+        ;;
+    n)
+        suffix=$(next_number "$SESSION_NAME")
+        new_name="${SESSION_NAME}${suffix}"
+        echo ""
+        echo "📁 Creating $new_name..."
+        create_session "$new_name"
+        sleep 0.3
+        tmux attach -t "$new_name"
+        ;;
+    d|d\ [1-9]|d[1-9])
+        # Extract number if provided directly (e.g., "d 1" or "d1")
+        if [[ "$choice_lower" =~ ^d\ ?([0-9]+)$ ]]; then
+            del_choice="${match[1]}"
+        else
+            echo ""
+            echo " Which session to delete?"
+            i=1
+            for s in "${existing[@]}"; do
+                echo "   $i) $s"
+                ((i++))
+            done
+            echo ""
+            echo -n " ➤ "
+            read del_choice
+        fi
+
+        if [[ "$del_choice" =~ ^[0-9]+$ ]] && [[ $del_choice -le ${#existing[@]} ]] && [[ $del_choice -ge 1 ]]; then
+            sess="${existing[$del_choice]}"
+            tmux kill-session -t "$sess" 2>/dev/null
+            echo " ✓ Session $sess deleted"
+            sleep 1
+            # Relaunch menu if other sessions exist
+            existing=($(tmux ls 2>/dev/null | grep -E "^${SESSION_NAME}(-[0-9]+)?:" | cut -d: -f1))
+            if [[ ${#existing[@]} -gt 0 ]]; then
+                exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+            else
+                echo ""
+                echo " No more sessions. Create a new one? (y/n)"
+                echo -n " ➤ "
+                read create
+                create_lower="${create:l}"
+                if [[ "$create_lower" == "y" || "$create_lower" == "yes" ]]; then
+                    echo "📁 Creating $SESSION_NAME..."
+                    create_session "$SESSION_NAME"
+                    tmux attach -t "$SESSION_NAME"
+                fi
+            fi
+        else
+            echo " ❌ Invalid choice"
+        fi
+        ;;
+    k)
+        echo ""
+        echo " ⚠️  Delete ALL $SESSION_NAME sessions? (y/n)"
+        echo -n " ➤ "
+        read confirm
+        confirm_lower="${confirm:l}"
+        if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
+            for s in "${existing[@]}"; do
+                tmux kill-session -t "$s" 2>/dev/null
+                echo " ✓ $s deleted"
+            done
+            echo ""
+            echo " All deleted. Create a new one? (y/n)"
+            echo -n " ➤ "
+            read create
+            create_lower="${create:l}"
+            if [[ "$create_lower" == "y" || "$create_lower" == "yes" ]]; then
+                echo "📁 Creating $SESSION_NAME..."
+                create_session "$SESSION_NAME"
+                tmux attach -t "$SESSION_NAME"
+            fi
+        else
+            echo " Cancelled."
+        fi
+        ;;
+    c)
+        echo ""
+        echo " 🧹 Cleaning project $SESSION_NAME..."
+        echo " ⚠️  SAFE: Keeps .claude/, CLAUDE.md, conversations"
+        echo ""
+
+        # npm/bun cache
+        if [[ -d "$PROJECT_PATH/node_modules/.cache" ]]; then
+            rm -rf "$PROJECT_PATH/node_modules/.cache"
+            echo " ✓ node_modules/.cache deleted"
+        fi
+
+        # Next.js cache
+        if [[ -d "$PROJECT_PATH/.next/cache" ]]; then
+            rm -rf "$PROJECT_PATH/.next/cache"
+            echo " ✓ .next/cache deleted"
+        fi
+
+        # Turbo cache
+        if [[ -d "$PROJECT_PATH/.turbo" ]]; then
+            rm -rf "$PROJECT_PATH/.turbo"
+            echo " ✓ .turbo deleted"
+        fi
+
+        # ESLint cache
+        if [[ -f "$PROJECT_PATH/.eslintcache" ]]; then
+            rm -f "$PROJECT_PATH/.eslintcache"
+            echo " ✓ .eslintcache deleted"
+        fi
+
+        # TypeScript cache
+        if [[ -d "$PROJECT_PATH/.tsbuildinfo" ]] || [[ -f "$PROJECT_PATH/tsconfig.tsbuildinfo" ]]; then
+            rm -rf "$PROJECT_PATH/.tsbuildinfo" "$PROJECT_PATH/tsconfig.tsbuildinfo" 2>/dev/null
+            echo " ✓ tsbuildinfo deleted"
+        fi
+
+        echo ""
+        echo " 🛡️  PRESERVED:"
+        echo "    - ~/.claude/ (conversations, history)"
+        echo "    - $PROJECT_PATH/.claude/ (project rules)"
+        echo "    - $PROJECT_PATH/CLAUDE.md"
+
+        # Space freed
+        echo ""
+        echo " 📊 Disk space:"
+        df -h / | tail -1 | awk '{print "    Used: "$3" / "$2" ("$5")"}'
+        echo ""
+        sleep 2
+        exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        ;;
+    i)
+        echo ""
+        echo " 📚 Claude Context Refresh for $SESSION_NAME"
+        echo ""
+        echo " This will help Claude understand the project better."
+        echo ""
+
+        # Check what exists
+        echo " 📁 Project context files:"
+        [[ -f "$PROJECT_PATH/CLAUDE.md" ]] && echo "    ✓ CLAUDE.md exists" || echo "    ✗ CLAUDE.md missing"
+        [[ -d "$PROJECT_PATH/.claude" ]] && echo "    ✓ .claude/ folder exists" || echo "    ✗ .claude/ folder missing"
+        [[ -d "$PROJECT_PATH/.claude/rules" ]] && echo "    ✓ .claude/rules/ exists" || echo "    ✗ .claude/rules/ missing"
+        [[ -f "$PROJECT_PATH/package.json" ]] && echo "    ✓ package.json exists" || echo "    ○ No package.json"
+
+        echo ""
+        echo " 💡 To refresh context in Claude:"
+        echo "    1) In your Claude session, type: /init"
+        echo "    2) Or ask: 'Read CLAUDE.md and understand the project'"
+        echo ""
+        echo " 🔧 Quick actions:"
+        echo "    1) Create missing CLAUDE.md from template"
+        echo "    2) Create .claude/rules/ folder"
+        echo "    3) Back to menu"
+        echo ""
+        echo -n " ➤ "
+        read init_choice
+
+        case "$init_choice" in
+            1)
+                if [[ ! -f "$PROJECT_PATH/CLAUDE.md" ]]; then
+                    cat > "$PROJECT_PATH/CLAUDE.md" << 'TEMPLATE'
+# CLAUDE.md - Project Instructions
+
+## Project Overview
+<!-- Describe your project here -->
+
+## Tech Stack
+<!-- List technologies used -->
+
+## Development
+```bash
+npm run dev    # Start dev server
+npm run build  # Build for production
+npm test       # Run tests
+```
+
+## Ecosystem
+This project has access to the full Claude ecosystem:
+- **Global rules:** `/home/hacker/.claude/rules/`
+- **Commands:** `/home/hacker/.claude/commands/`
+TEMPLATE
+                    echo " ✓ CLAUDE.md created - customize it for your project!"
+                else
+                    echo " ⚠️  CLAUDE.md already exists"
+                fi
+                ;;
+            2)
+                mkdir -p "$PROJECT_PATH/.claude/rules"
+                echo " ✓ .claude/rules/ created"
+                ;;
+        esac
+
+        sleep 2
+        exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        ;;
+    x|kkc)
+        echo ""
+        echo " ☢️  NUCLEAR - Delete all sessions + clean caches? (y/n)"
+        echo " 🛡️  SAFE: ~/.claude/ and project .claude/ will NOT be touched"
+        echo -n " ➤ "
+        read confirm
+        confirm_lower="${confirm:l}"
+        if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
+            echo ""
+            echo " 💀 Killing all $SESSION_NAME sessions..."
+            for s in "${existing[@]}"; do
+                tmux kill-session -t "$s" 2>/dev/null
+                echo " ✓ $s deleted"
+            done
+
+            echo ""
+            echo " 🧹 Cleaning project caches..."
+            [[ -d "$PROJECT_PATH/node_modules/.cache" ]] && rm -rf "$PROJECT_PATH/node_modules/.cache" && echo " ✓ node_modules/.cache"
+            [[ -d "$PROJECT_PATH/.next/cache" ]] && rm -rf "$PROJECT_PATH/.next/cache" && echo " ✓ .next/cache"
+            [[ -d "$PROJECT_PATH/.turbo" ]] && rm -rf "$PROJECT_PATH/.turbo" && echo " ✓ .turbo"
+            [[ -f "$PROJECT_PATH/.eslintcache" ]] && rm -f "$PROJECT_PATH/.eslintcache" && echo " ✓ .eslintcache"
+            [[ -f "$PROJECT_PATH/tsconfig.tsbuildinfo" ]] && rm -f "$PROJECT_PATH/tsconfig.tsbuildinfo" && echo " ✓ tsbuildinfo"
+
+            echo ""
+            echo " 🧹 Cleaning system RAM..."
+            ram_before=$(free -m | awk '/^Mem:/{print $3}')
+            sync
+            echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 && echo " ✓ RAM freed"
+            ram_after=$(free -m | awk '/^Mem:/{print $3}')
+            ram_freed=$((ram_before - ram_after))
+
+            echo ""
+            echo " ☢️  NUCLEAR complete!"
+            echo " 📊 Result:"
+            free -h | awk '/^Mem:/{printf "    RAM: %s used / %s total\n", $3, $2}'
+            [[ $ram_freed -gt 0 ]] && echo "    Freed: ${ram_freed}MB"
+            df -h / | tail -1 | awk '{print "    Disk: "$3" / "$2" ("$5")"}'
+            echo ""
+            sleep 2
+
+            echo " Create a new session? (y/n)"
+            echo -n " ➤ "
+            read create
+            create_lower="${create:l}"
+            if [[ "$create_lower" == "y" || "$create_lower" == "yes" ]]; then
+                echo "📁 Creating $SESSION_NAME..."
+                create_session "$SESSION_NAME"
+                tmux attach -t "$SESSION_NAME"
+            fi
+        else
+            echo " Cancelled."
+        fi
+        ;;
+    p)
+        if [[ ! -d "$PROJECT_PATH/.git" ]]; then
+            echo " ❌ Not a git repository"
+            sleep 1
+            exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        fi
+
+        echo ""
+        echo " ⬇️  Git Pull - $SESSION_NAME"
+        echo " ════════════════════════════"
+        cd "$PROJECT_PATH"
+
+        # Check for uncommitted changes
+        uncommitted=$(git status --porcelain 2>/dev/null | wc -l)
+        if [[ "$uncommitted" -gt 0 ]]; then
+            echo ""
+            echo " ⚠️  You have $uncommitted uncommitted changes!"
+            echo " Pull might cause conflicts. Continue? (y/n)"
+            echo -n " ➤ "
+            read confirm
+            if [[ "${confirm:l}" != "y" && "${confirm:l}" != "yes" ]]; then
+                echo " Cancelled."
+                sleep 1
+                exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+            fi
+        fi
+
+        echo ""
+        echo " 📥 Pulling from remote..."
+        if git pull; then
+            echo ""
+            echo " ✅ Pull successful!"
+        else
+            echo ""
+            echo " ❌ Pull failed (conflicts?)"
+        fi
+        sleep 2
+        exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        ;;
+    g)
+        if [[ ! -d "$PROJECT_PATH/.git" ]]; then
+            echo " ❌ Not a git repository"
+            sleep 1
+            exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        fi
+
+        echo ""
+        echo " 🚀 Git Commit + Push - $SESSION_NAME"
+        echo " ═════════════════════════════════════"
+        cd "$PROJECT_PATH"
+
+        # Check for changes
+        uncommitted=$(git status --porcelain 2>/dev/null | wc -l)
+
+        if [[ "$uncommitted" -eq 0 ]]; then
+            # Check if there are commits to push
+            ahead=$(git rev-list --count @{upstream}..HEAD 2>/dev/null || echo "0")
+            if [[ "$ahead" -eq 0 ]]; then
+                echo ""
+                echo " ✅ Nothing to commit or push - already synced!"
+                sleep 2
+                exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+            else
+                echo ""
+                echo " 📤 $ahead commit(s) to push..."
+                if git push; then
+                    echo " ✅ Pushed!"
+                else
+                    echo " ❌ Push failed"
+                fi
+                sleep 2
+                exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+            fi
+        fi
+
+        echo ""
+        echo " 📝 $uncommitted file(s) to commit"
+        echo ""
+
+        # Show changed files
+        git status --short | head -10
+        [[ "$uncommitted" -gt 10 ]] && echo " ... and $((uncommitted - 10)) more"
+
+        echo ""
+        echo " Commit message (or Enter for 'WIP: auto-save'):"
+        echo -n " ➤ "
+        read commit_msg
+
+        [[ -z "$commit_msg" ]] && commit_msg="WIP: auto-save from VPS [$(date '+%Y-%m-%d %H:%M')]"
+
+        echo ""
+        echo " 📦 Staging all changes..."
+        git add -A
+
+        echo " 💾 Committing..."
+        if git commit -m "$commit_msg"; then
+            echo " ✅ Committed!"
+            echo ""
+            echo " 📤 Pushing to remote..."
+            if git push; then
+                echo " ✅ Pushed!"
+            else
+                echo " ❌ Push failed"
+            fi
+        else
+            echo " ❌ Commit failed"
+        fi
+
+        sleep 2
+        exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        ;;
+    s)
+        if [[ ! -d "$PROJECT_PATH/.git" ]]; then
+            echo " ❌ Not a git repository"
+            sleep 1
+            exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        fi
+
+        echo ""
+        echo " 🔄 Git Sync - $SESSION_NAME"
+        echo " ═══════════════════════════"
+        cd "$PROJECT_PATH"
+
+        # Get status
+        uncommitted=$(git status --porcelain 2>/dev/null | wc -l)
+        git fetch --quiet 2>/dev/null
+        ahead=$(git rev-list --count @{upstream}..HEAD 2>/dev/null || echo "0")
+        behind=$(git rev-list --count HEAD..@{upstream} 2>/dev/null || echo "0")
+
+        echo ""
+        echo " Status:"
+        echo "   Uncommitted: $uncommitted"
+        echo "   Ahead: $ahead"
+        echo "   Behind: $behind"
+        echo ""
+
+        # Handle uncommitted first
+        if [[ "$uncommitted" -gt 0 ]]; then
+            echo " ⚠️  Uncommitted changes detected!"
+            echo " Commit first? (y/n)"
+            echo -n " ➤ "
+            read confirm
+            if [[ "${confirm:l}" == "y" || "${confirm:l}" == "yes" ]]; then
+                git add -A
+                git commit -m "WIP: auto-save from VPS [$(date '+%Y-%m-%d %H:%M')]"
+                echo " ✅ Committed"
+                ahead=$((ahead + 1))
+            fi
+        fi
+
+        # Pull if behind
+        if [[ "$behind" -gt 0 ]]; then
+            echo ""
+            echo " ⬇️  Pulling $behind commit(s)..."
+            if git pull --ff-only; then
+                echo " ✅ Pulled!"
+            else
+                echo " ⚠️  Fast-forward failed, trying merge..."
+                git pull
+            fi
+        fi
+
+        # Push if ahead
+        ahead=$(git rev-list --count @{upstream}..HEAD 2>/dev/null || echo "0")
+        if [[ "$ahead" -gt 0 ]]; then
+            echo ""
+            echo " 🚀 Pushing $ahead commit(s)..."
+            if git push; then
+                echo " ✅ Pushed!"
+            else
+                echo " ❌ Push failed"
+            fi
+        fi
+
+        # Final status
+        echo ""
+        echo " ═══════════════════════════"
+        echo " ✅ Sync complete!"
+
+        sleep 2
+        exec "$0" "$SESSION_NAME" "$PROJECT_PATH" "$NO_CLAUDE"
+        ;;
+    q|"")
+        echo " Cancelled."
+        ;;
+    *)
+        echo " ❌ Invalid choice"
+        ;;
+esac
