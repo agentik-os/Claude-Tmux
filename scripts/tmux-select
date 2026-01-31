@@ -29,11 +29,18 @@ show_menu() {
     echo " ─────────────────"
 
     declare -g -a sess_names
+    declare -g -a project_bases
     sess_names=()
+    project_bases=()
     i=1
     while IFS= read -r line; do
         name=$(echo "$line" | cut -d: -f1)
         sess_names+=("$name")
+        # Extract base project name (e.g., "Home-2" -> "Home", "DentistryGPT" -> "DentistryGPT")
+        base_name="${name%%-[0-9]*}"
+        if [[ ! " ${project_bases[*]} " =~ " ${base_name} " ]]; then
+            project_bases+=("$base_name")
+        fi
         wins=$(tmux list-windows -t "$name" 2>/dev/null | wc -l)
         path=$(tmux display-message -t "$name" -p '#{pane_current_path}' 2>/dev/null | sed "s|$HOME|~|")
         created=$(tmux display-message -t "$name" -p '#{session_created}' 2>/dev/null)
@@ -50,6 +57,7 @@ show_menu() {
     echo " Actions:"
     echo " ────────"
     echo "   D) 🗑️  Delete a session"
+    echo "   F) 🎯 Delete by project (all Home, all Dent...)"
     echo "   K) 💀 Delete ALL sessions"
     echo "   C) 🧹 Clean RAM & caches (safe, keeps Claude data)"
     echo "   X) ☢️  NUCLEAR (kill sessions + clean caches)"
@@ -68,7 +76,10 @@ while true; do
         exit 0
     fi
 
-    read choice
+    # Read input with proper terminal handling
+    read -r choice 2>/dev/null || choice=""
+    # Remove any control characters and trim
+    choice=$(echo "$choice" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     choice_lower="${choice:l}"
 
     case "$choice_lower" in
@@ -94,7 +105,7 @@ while true; do
                 echo ""
                 echo " Which session to delete? (1-${#sess_names[@]})"
                 echo -n " ➤ "
-                read del_choice
+                read -r del_choice
             fi
 
             if [[ "$del_choice" =~ ^[0-9]+$ ]] && [[ $del_choice -le ${#sess_names[@]} ]] && [[ $del_choice -ge 1 ]]; then
@@ -107,11 +118,61 @@ while true; do
                 sleep 1
             fi
             ;;
+        f)
+            echo ""
+            echo " 🎯 Kill sessions by project"
+            echo " ────────────────────────────"
+            echo ""
+            # Show available projects with session counts
+            j=1
+            declare -a project_list
+            project_list=()
+            for proj in "${project_bases[@]}"; do
+                count=$(tmux ls 2>/dev/null | grep -cE "^${proj}(-[0-9]+)?:")
+                project_list+=("$proj")
+                printf "   %d) %-15s (%d session%s)\n" "$j" "$proj" "$count" "$([[ $count -gt 1 ]] && echo 's' || echo '')"
+                ((j++))
+            done
+            echo ""
+            echo "   A) ❌ Cancel"
+            echo ""
+            echo -n " ➤ "
+            read -r proj_choice
+            proj_choice_lower="${proj_choice:l}"
+
+            if [[ "$proj_choice_lower" == "a" || -z "$proj_choice" ]]; then
+                echo " Cancelled."
+                sleep 1
+            elif [[ "$proj_choice" =~ ^[0-9]+$ ]] && [[ $proj_choice -le ${#project_list[@]} ]] && [[ $proj_choice -ge 1 ]]; then
+                selected_proj="${project_list[$proj_choice]}"
+                # Count sessions for this project
+                proj_sessions=($(tmux ls 2>/dev/null | grep -E "^${selected_proj}(-[0-9]+)?:" | cut -d: -f1))
+                echo ""
+                echo " ⚠️  Delete ALL ${#proj_sessions[@]} ${selected_proj} session(s)? (y/n)"
+                echo -n " ➤ "
+                read -r confirm
+                if [[ "${confirm:l}" == "y" || "${confirm:l}" == "yes" ]]; then
+                    for s in "${proj_sessions[@]}"; do
+                        tmux kill-session -t "$s" 2>/dev/null
+                        echo " ✓ $s deleted"
+                    done
+                    echo ""
+                    echo " ✅ All ${selected_proj} sessions deleted!"
+                    sleep 1
+                else
+                    echo " Cancelled."
+                    sleep 1
+                fi
+            else
+                echo " ❌ Invalid choice"
+                sleep 1
+            fi
+            ;;
         k)
             echo ""
             echo " ⚠️  Delete ALL sessions? (y/n)"
             echo -n " ➤ "
-            read confirm
+            read -r confirm
             confirm_lower="${confirm:l}"
             if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
                 tmux kill-server 2>/dev/null
@@ -175,7 +236,7 @@ while true; do
             echo " ☢️  NUCLEAR - Delete ALL sessions + clean caches? (y/n)"
             echo " 🛡️  SAFE: ~/.claude/ will NOT be touched"
             echo -n " ➤ "
-            read confirm
+            read -r confirm
             confirm_lower="${confirm:l}"
             if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
                 echo ""

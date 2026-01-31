@@ -152,8 +152,11 @@ show_menu() {
 }
 
 show_menu
-read choice
 
+# Read input with proper terminal handling
+read -r choice 2>/dev/null || choice=""
+# Remove any control characters and trim
+choice=$(echo "$choice" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 # Convert to lowercase for comparison
 choice_lower="${choice:l}"
 
@@ -193,7 +196,7 @@ case "$choice_lower" in
             done
             echo ""
             echo -n " ➤ "
-            read del_choice
+            read -r del_choice
         fi
 
         if [[ "$del_choice" =~ ^[0-9]+$ ]] && [[ $del_choice -le ${#existing[@]} ]] && [[ $del_choice -ge 1 ]]; then
@@ -209,7 +212,7 @@ case "$choice_lower" in
                 echo ""
                 echo " No more sessions. Create a new one? (y/n)"
                 echo -n " ➤ "
-                read create
+                read -r create
                 create_lower="${create:l}"
                 if [[ "$create_lower" == "y" || "$create_lower" == "yes" ]]; then
                     echo "📁 Creating $SESSION_NAME..."
@@ -225,7 +228,7 @@ case "$choice_lower" in
         echo ""
         echo " ⚠️  Delete ALL $SESSION_NAME sessions? (y/n)"
         echo -n " ➤ "
-        read confirm
+        read -r confirm
         confirm_lower="${confirm:l}"
         if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
             for s in "${existing[@]}"; do
@@ -235,7 +238,7 @@ case "$choice_lower" in
             echo ""
             echo " All deleted. Create a new one? (y/n)"
             echo -n " ➤ "
-            read create
+            read -r create
             create_lower="${create:l}"
             if [[ "$create_lower" == "y" || "$create_lower" == "yes" ]]; then
                 echo "📁 Creating $SESSION_NAME..."
@@ -321,7 +324,7 @@ case "$choice_lower" in
         echo "    3) Back to menu"
         echo ""
         echo -n " ➤ "
-        read init_choice
+        read -r init_choice
 
         case "$init_choice" in
             1)
@@ -366,7 +369,7 @@ TEMPLATE
         echo " ☢️  NUCLEAR - Delete all sessions + clean caches? (y/n)"
         echo " 🛡️  SAFE: ~/.claude/ and project .claude/ will NOT be touched"
         echo -n " ➤ "
-        read confirm
+        read -r confirm
         confirm_lower="${confirm:l}"
         if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
             echo ""
@@ -403,7 +406,7 @@ TEMPLATE
 
             echo " Create a new session? (y/n)"
             echo -n " ➤ "
-            read create
+            read -r create
             create_lower="${create:l}"
             if [[ "$create_lower" == "y" || "$create_lower" == "yes" ]]; then
                 echo "📁 Creating $SESSION_NAME..."
@@ -433,7 +436,7 @@ TEMPLATE
             echo " ⚠️  You have $uncommitted uncommitted changes!"
             echo " Pull might cause conflicts. Continue? (y/n)"
             echo -n " ➤ "
-            read confirm
+            read -r confirm
             if [[ "${confirm:l}" != "y" && "${confirm:l}" != "yes" ]]; then
                 echo " Cancelled."
                 sleep 1
@@ -500,7 +503,7 @@ TEMPLATE
         echo ""
         echo " Commit message (or Enter for 'WIP: auto-save'):"
         echo -n " ➤ "
-        read commit_msg
+        read -r commit_msg
 
         [[ -z "$commit_msg" ]] && commit_msg="WIP: auto-save from VPS [$(date '+%Y-%m-%d %H:%M')]"
 
@@ -555,7 +558,7 @@ TEMPLATE
             echo " ⚠️  Uncommitted changes detected!"
             echo " Commit first? (y/n)"
             echo -n " ➤ "
-            read confirm
+            read -r confirm
             if [[ "${confirm:l}" == "y" || "${confirm:l}" == "yes" ]]; then
                 git add -A
                 git commit -m "WIP: auto-save from VPS [$(date '+%Y-%m-%d %H:%M')]"
